@@ -8,7 +8,11 @@
     "start": "npx tsx src/main.ts",
     "dev": "npx tsx src/main.ts --watch",
     "build": "tsc",
-    "clean": "rm -rf dist"
+    "clean": "rm -rf dist",
+    "test-affinity": "npx tsx src/optimized-affinity-test.ts",
+    "test-affinity-optimized": "npx tsx src/optimized-affinity-test.ts",
+    "test-affinity-full": "npx tsx src/test-affinity.ts",
+    "create-sample": "npx tsx src/create-sample-data.ts"
   },
   "keywords": [
     "discord",
