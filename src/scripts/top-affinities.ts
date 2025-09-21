@@ -71,7 +71,7 @@ async function showTopAffinities() {
 
       // Breakdown
       console.log(`   Breakdown:`);
-      console.log(`     VC Time: ${relationship.breakdown.vcTime.toFixed(2)} points`);
+      console.log(`     VC Relative Score: ${relationship.breakdown.vcRelativeScore.toFixed(2)} points`);
       console.log(`     Replies: ${relationship.breakdown.replies.toFixed(2)} points`);
       console.log(`     Mentions: ${relationship.breakdown.mentions.toFixed(2)} points`);
       console.log(`     Reactions: ${relationship.breakdown.reactions.toFixed(2)} points`);
@@ -126,12 +126,12 @@ async function showTopAffinities() {
     console.log(`Moderate (8-14): ${moderateCount}`);
     console.log(`Weak (<8): ${weakCount}`);
 
-    // VC-focused relationships
-    const vcFocused = topRelationships.filter(r => r.breakdown.vcTime > r.breakdown.replies + r.breakdown.mentions + r.breakdown.reactions);
+    // VC-focused relationships (now based on relative score)
+    const vcFocused = topRelationships.filter(r => r.breakdown.vcRelativeScore > r.breakdown.replies + r.breakdown.mentions + r.breakdown.reactions);
     console.log(`VC-Focused Relationships: ${vcFocused.length}`);
 
     // Text-focused relationships
-    const textFocused = topRelationships.filter(r => r.breakdown.vcTime < r.breakdown.replies + r.breakdown.mentions + r.breakdown.reactions);
+    const textFocused = topRelationships.filter(r => r.breakdown.vcRelativeScore < r.breakdown.replies + r.breakdown.mentions + r.breakdown.reactions);
     console.log(`Text-Focused Relationships: ${textFocused.length}`);
 
     console.log('\n🔹 Top affinities analysis completed successfully!');

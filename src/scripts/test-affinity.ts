@@ -56,38 +56,58 @@ async function optimizedAffinityTest() {
     console.log(`  ${user1.displayName} → ${user2.displayName}: ${analysis.affinity?.totalScore.toFixed(2) || 0}`);
     console.log(`  ${user2.displayName} → ${user1.displayName}: ${analysis.reverseAffinity?.totalScore.toFixed(2) || 0}`);
 
-    // Detailed breakdown
+    // Detailed breakdown for both directions
+    console.log(`\n🔹 RELATIONSHIP BREAKDOWN:`);
+    console.log('='.repeat(50));
+
     if (analysis.affinity) {
-      console.log(`\nBreakdown for ${user1.displayName} → ${user2.displayName}:`);
-      console.log(`  VC Time: ${analysis.affinity.breakdown.vcTime.toFixed(2)} points`);
+      console.log(`\n${user1.displayName} → ${user2.displayName}:`);
+      console.log(`  VC Relative Score: ${analysis.affinity.breakdown.vcRelativeScore.toFixed(2)} points`);
       console.log(`  Replies: ${analysis.affinity.breakdown.replies.toFixed(2)} points`);
       console.log(`  Mentions: ${analysis.affinity.breakdown.mentions.toFixed(2)} points`);
       console.log(`  Reactions: ${analysis.affinity.breakdown.reactions.toFixed(2)} points`);
 
-      // VC-specific details
+      // VC-specific details for user1 → user2
       if (analysis.affinity.vcDetails) {
         const vc = analysis.affinity.vcDetails;
-        console.log(`\n🔹 VOICE CHAT ANALYSIS:`);
-        console.log(`  Total time together: ${Math.round(vc.totalMinutes)} minutes`);
-        console.log(`  Number of sessions: ${vc.sessionCount}`);
-        console.log(`  Average session length: ${Math.round(vc.averageSessionLength)} minutes`);
-        console.log(`  Relative VC score: ${vc.relativeScore.toFixed(1)}% of total VC time`);
+        console.log(`\n  🔹 VOICE CHAT ANALYSIS:`);
+        console.log(`    Total time together: ${Math.round(vc.totalMinutes)} minutes`);
+        console.log(`    Number of sessions: ${vc.sessionCount}`);
+        console.log(`    Average session length: ${Math.round(vc.averageSessionLength)} minutes`);
+        console.log(`    Relative VC score: ${vc.relativeScore.toFixed(1)}% of total VC time`);
 
         if (vc.topChannels.length > 0) {
-          console.log(`  Top channels:`);
+          console.log(`    Top channels:`);
           vc.topChannels.forEach((channel, index) => {
-            console.log(`    ${index + 1}. ${channel.channelName}: ${Math.round(channel.minutes)} minutes`);
+            console.log(`      ${index + 1}. ${channel.channelName}: ${Math.round(channel.minutes)} minutes`);
           });
         }
       }
     }
 
     if (analysis.reverseAffinity) {
-      console.log(`\nBreakdown for ${user2.displayName} → ${user1.displayName}:`);
-      console.log(`  VC Time: ${analysis.reverseAffinity.breakdown.vcTime.toFixed(2)} points`);
+      console.log(`\n${user2.displayName} → ${user1.displayName}:`);
+      console.log(`  VC Relative Score: ${analysis.reverseAffinity.breakdown.vcRelativeScore.toFixed(2)} points`);
       console.log(`  Replies: ${analysis.reverseAffinity.breakdown.replies.toFixed(2)} points`);
       console.log(`  Mentions: ${analysis.reverseAffinity.breakdown.mentions.toFixed(2)} points`);
       console.log(`  Reactions: ${analysis.reverseAffinity.breakdown.reactions.toFixed(2)} points`);
+
+      // VC-specific details for user2 → user1
+      if (analysis.reverseAffinity.vcDetails) {
+        const vc = analysis.reverseAffinity.vcDetails;
+        console.log(`\n  🔹 VOICE CHAT ANALYSIS:`);
+        console.log(`    Total time together: ${Math.round(vc.totalMinutes)} minutes`);
+        console.log(`    Number of sessions: ${vc.sessionCount}`);
+        console.log(`    Average session length: ${Math.round(vc.averageSessionLength)} minutes`);
+        console.log(`    Relative VC score: ${vc.relativeScore.toFixed(1)}% of total VC time`);
+
+        if (vc.topChannels.length > 0) {
+          console.log(`    Top channels:`);
+          vc.topChannels.forEach((channel, index) => {
+            console.log(`      ${index + 1}. ${channel.channelName}: ${Math.round(channel.minutes)} minutes`);
+          });
+        }
+      }
     }
 
     // Interaction counts
@@ -108,20 +128,6 @@ async function optimizedAffinityTest() {
       console.log(`  Days Active: ${timeRange.daysActive}`);
     }
 
-    // Relative metrics
-    if (analysis.affinity) {
-      console.log(`\nRelative Metrics:`);
-      console.log(`  Relative Score: ${analysis.affinity.relativeScore.toFixed(1)}%`);
-      console.log(`  Rank: #${analysis.affinity.rank}`);
-    }
-
-    // Insights
-    if (analysis.insights.length > 0) {
-      console.log(`\n🔹 INSIGHTS:`);
-      analysis.insights.forEach((insight, index) => {
-        console.log(`  ${index + 1}. ${insight}`);
-      });
-    }
 
     console.log('\n🔹 Advanced affinity test completed successfully!');
 

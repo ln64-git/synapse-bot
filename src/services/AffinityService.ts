@@ -10,7 +10,7 @@ export interface AffinityScore {
     reactions: number;
     mentions: number;
     replies: number;
-    vcTime: number;
+    vcRelativeScore: number;
   };
   interactionCounts: {
     reactions: number;
@@ -47,12 +47,12 @@ export interface AffinityAnalysis {
 export class AffinityService {
   private dbService: DatabaseService;
 
-  // Scoring weights for different interaction types (VC prioritized)
+  // Scoring weights for different interaction types (VC relative score prioritized)
   private readonly SCORING_WEIGHTS = {
     reactions: 1.0,
     mentions: 2.0,
     replies: 3.0,
-    vcTime: 2.0, // per minute - higher weight than text interactions
+    vcRelativeScore: 50.0, // Relative VC score is the primary indicator
   };
 
   // Time decay factor (interactions older than this get reduced weight)
@@ -197,7 +197,7 @@ export class AffinityService {
     let reactions = 0;
     let mentions = 0;
     let replies = 0;
-    let vcTime = 0;
+    let vcRelativeScore = 0;
 
     let reactionCount = 0;
     let mentionCount = 0;
@@ -229,16 +229,13 @@ export class AffinityService {
     // Calculate VC time with target user using overlap detection
     const vcTimeData = await this.calculateVCTimeWithUser(fromUserId, targetUserId, guildId, voiceSessions);
 
-    // Apply relative VC scoring - normalize against user's total VC time
-    const totalVCTime = await this.getTotalVCTimeForUser(fromUserId, guildId);
-    const vcRelativeScore = totalVCTime > 0 ? (vcTimeData.totalMinutes / totalVCTime) : 0;
-
-    // Scale VC score to give it more weight than text interactions
-    // Max possible VC score is 20 points (10 minutes = 1% of total VC time)
-    vcTime = Math.min(vcRelativeScore * 2000, 20) * this.SCORING_WEIGHTS.vcTime;
+    // Use relative VC score as the primary affinity indicator
+    // This represents what percentage of total VC time is spent with this specific user
+    const vcRelativeScoreValue = vcTimeData.relativeScore; // Already calculated as percentage
+    vcRelativeScore = vcRelativeScoreValue * this.SCORING_WEIGHTS.vcRelativeScore;
     vcSessionCount = vcTimeData.sessionCount;
 
-    const total = reactions + mentions + replies + vcTime;
+    const total = reactions + mentions + replies + vcRelativeScore;
 
     return {
       total,
@@ -246,7 +243,7 @@ export class AffinityService {
         reactions,
         mentions,
         replies,
-        vcTime,
+        vcRelativeScore,
       },
       counts: {
         reactions: reactionCount,
@@ -348,10 +345,11 @@ export class AffinityService {
     score1to2: number,
     score2to1: number
   ): 'strong' | 'moderate' | 'weak' | 'none' {
-    // Balanced thresholds for the new scoring system
-    if (mutualScore >= 15) return 'strong';
-    if (mutualScore >= 8) return 'moderate';
-    if (mutualScore >= 3) return 'weak';
+    // Thresholds based on VC relative score prioritization
+    // Since VC relative score is now the primary factor (50x weight)
+    if (mutualScore >= 100) return 'strong';  // 2%+ relative VC time combined
+    if (mutualScore >= 50) return 'moderate';  // 1%+ relative VC time combined
+    if (mutualScore >= 10) return 'weak';     // 0.2%+ relative VC time combined
     return 'none';
   }
 
@@ -383,7 +381,7 @@ export class AffinityService {
     if (affinity.interactionCounts.mentions > totalInteractions * 0.3) {
       insights.push('Frequent mentions suggest close relationship');
     }
-    // VC-specific insights
+    // VC-specific insights (now prioritized)
     if (affinity.vcDetails) {
       const vcDetails = affinity.vcDetails;
 
@@ -393,10 +391,15 @@ export class AffinityService {
         insights.push(`Moderate voice chat time together (${Math.round(vcDetails.totalMinutes)} minutes)`);
       }
 
-      if (vcDetails.relativeScore > 10) {
+      // VC relative score is now the primary affinity indicator
+      if (vcDetails.relativeScore > 20) {
+        insights.push(`Very high VC affinity - ${vcDetails.relativeScore.toFixed(1)}% of total VC time spent together`);
+      } else if (vcDetails.relativeScore > 10) {
         insights.push(`High VC affinity - ${vcDetails.relativeScore.toFixed(1)}% of total VC time spent together`);
       } else if (vcDetails.relativeScore > 2) {
         insights.push(`Moderate VC affinity - ${vcDetails.relativeScore.toFixed(1)}% of total VC time spent together`);
+      } else if (vcDetails.relativeScore > 0) {
+        insights.push(`Low VC affinity - ${vcDetails.relativeScore.toFixed(1)}% of total VC time spent together`);
       }
 
       if (vcDetails.topChannels.length > 0) {
@@ -407,7 +410,7 @@ export class AffinityService {
       if (vcDetails.averageSessionLength > 30) {
         insights.push(`Long average VC sessions (${Math.round(vcDetails.averageSessionLength)} minutes)`);
       }
-    } else if (affinity.breakdown.vcTime > 2) {
+    } else if (affinity.breakdown.vcRelativeScore > 10) {
       insights.push('Significant voice chat time together');
     }
 
@@ -477,6 +480,7 @@ export class AffinityService {
     }
 
     // Calculate relative score - time with this user vs time with all other users
+    // This represents what percentage of fromUserId's total VC time is spent with targetUserId
     const totalVCTime = await this.getTotalVCTimeForUser(fromUserId, guildId);
     const relativeScore = totalVCTime > 0 ? (totalMinutes / totalVCTime) * 100 : 0;
 
@@ -545,7 +549,65 @@ export class AffinityService {
       }
     }
 
-    return overlaps;
+    // Deduplicate overlapping sessions by merging overlapping time ranges
+    return this.mergeOverlappingTimeRanges(overlaps);
+  }
+
+  /**
+   * Merge overlapping time ranges to avoid double-counting
+   */
+  private mergeOverlappingTimeRanges(
+    overlaps: Array<{
+      channelName: string;
+      startTime: Date;
+      endTime: Date;
+      durationMinutes: number;
+    }>
+  ): Array<{
+    channelName: string;
+    startTime: Date;
+    endTime: Date;
+    durationMinutes: number;
+  }> {
+    if (overlaps.length === 0) return overlaps;
+
+    // Group by channel
+    const channelGroups = new Map<string, typeof overlaps>();
+    for (const overlap of overlaps) {
+      if (!channelGroups.has(overlap.channelName)) {
+        channelGroups.set(overlap.channelName, []);
+      }
+      channelGroups.get(overlap.channelName)!.push(overlap);
+    }
+
+    const merged: typeof overlaps = [];
+
+    for (const [channelName, channelOverlaps] of channelGroups) {
+      // Sort by start time
+      channelOverlaps.sort((a, b) => a.startTime.getTime() - b.startTime.getTime());
+
+      let current = channelOverlaps[0];
+      for (let i = 1; i < channelOverlaps.length; i++) {
+        const next = channelOverlaps[i];
+
+        // If next overlap starts before current ends, merge them
+        if (next.startTime <= current.endTime) {
+          current = {
+            channelName,
+            startTime: current.startTime,
+            endTime: new Date(Math.max(current.endTime.getTime(), next.endTime.getTime())),
+            durationMinutes: (Math.max(current.endTime.getTime(), next.endTime.getTime()) - current.startTime.getTime()) / (1000 * 60)
+          };
+        } else {
+          // No overlap, add current and move to next
+          merged.push(current);
+          current = next;
+        }
+      }
+      merged.push(current);
+    }
+
+    return merged;
   }
 
   /**
