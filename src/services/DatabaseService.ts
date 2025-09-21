@@ -159,6 +159,15 @@ export class DatabaseService {
       .toArray();
   }
 
+  async getMessagesByChannel(guildId: string, channelName: string, limit: number = 100): Promise<Message[]> {
+    const collections = this.getCollections();
+    return await collections.messages
+      .find({ guildId, channelId: channelName })
+      .sort({ timestamp: -1 })
+      .limit(limit)
+      .toArray();
+  }
+
   async getLastMessageId(guildId: string): Promise<string | null> {
     const collections = this.getCollections();
     const lastMessage = await collections.messages
@@ -288,6 +297,14 @@ export class DatabaseService {
       .toArray();
   }
 
+  async getVoiceSessionsByGuild(guildId: string): Promise<VoiceSession[]> {
+    const collections = this.getCollections();
+    return await collections.voiceSessions
+      .find({ guildId })
+      .sort({ joinedAt: -1 })
+      .toArray();
+  }
+
   // Guild sync operations
   async getGuildSync(guildId: string): Promise<GuildSync | null> {
     const collections = this.getCollections();
@@ -375,6 +392,249 @@ export class DatabaseService {
     await this.createIndexes();
 
     console.log('🔹 Database wiped successfully');
+  }
+
+  /**
+   * Sync Sapphire VC logs with database
+   * Simple function to import legacy VC data from Sapphire bot messages
+   */
+  async syncSapphireVCLogs(): Promise<{ success: boolean; sessionsCreated: number; errors: string[] }> {
+    const { Client, GatewayIntentBits } = await import('discord.js');
+    const { config } = await import('../config');
+
+    const client = new Client({
+      intents: [
+        GatewayIntentBits.Guilds,
+        GatewayIntentBits.GuildMessages,
+        GatewayIntentBits.MessageContent,
+      ],
+    });
+
+    const errors: string[] = [];
+    let sessionsCreated = 0;
+
+    try {
+      console.log('🔹 Connecting to Discord to sync Sapphire VC logs...');
+      await client.login(config.botToken);
+
+      // Wait for guilds to load
+      await new Promise(resolve => setTimeout(resolve, 2000));
+
+      // Get the guild
+      let guild = client.guilds.cache.get(config.guildId || '');
+      if (!guild) {
+        guild = client.guilds.cache.find(g => g.name === 'Arcados');
+        if (!guild) {
+          guild = client.guilds.cache.first();
+        }
+      }
+
+      if (!guild) {
+        throw new Error('No guild found');
+      }
+
+      console.log(`🔹 Found guild: ${guild.name}`);
+
+      // Find vc-logs channel
+      const vcLogsChannel = guild.channels.cache.find(channel =>
+        channel.isTextBased() &&
+        channel.name.toLowerCase().includes('vc') &&
+        channel.name.toLowerCase().includes('log')
+      ) as any; // Type assertion for text channel
+
+      if (!vcLogsChannel) {
+        throw new Error('vc-logs channel not found');
+      }
+
+      console.log(`🔹 Found vc-logs channel: ${vcLogsChannel.name}`);
+
+      // Fetch messages in batches
+      const messages = new Map<string, any>();
+      let lastMessageId: string | undefined;
+      let totalFetched = 0;
+      const maxMessages = 1000;
+
+      while (totalFetched < maxMessages) {
+        const batchSize = Math.min(100, maxMessages - totalFetched);
+        const batch = await vcLogsChannel.messages.fetch({
+          limit: batchSize,
+          before: lastMessageId
+        });
+
+        if (batch.size === 0) break;
+
+        batch.forEach((msg: any, id: string) => messages.set(id, msg));
+        totalFetched += batch.size;
+        lastMessageId = batch.last()?.id;
+
+        console.log(`🔹 Fetched ${totalFetched} messages...`);
+        await new Promise(resolve => setTimeout(resolve, 100));
+      }
+
+      console.log(`🔹 Found ${messages.size} messages in vc-logs channel`);
+
+      // Process Sapphire bot messages
+      const sapphireMessages = Array.from(messages.values()).filter((msg: any) =>
+        msg.author.bot &&
+        msg.author.id === '1254709276715388958' && // Sapphire bot ID
+        msg.embeds.length > 0
+      );
+
+      console.log(`🔹 Found ${sapphireMessages.length} Sapphire bot messages with embeds`);
+
+      const vcEvents: Array<{ type: 'joined' | 'left', user: string, userId: string, channelId: string, channelName: string, userCount: number, timestamp: Date, guildId: string }> = [];
+      const channelIds = new Set<string>();
+
+      // Parse all embeds
+      for (const message of sapphireMessages) {
+        for (const embed of message.embeds) {
+          const event = this.parseSapphireEmbed(embed, message.createdAt, guild.id);
+          if (event) {
+            vcEvents.push(event);
+            channelIds.add(event.channelId);
+          }
+        }
+      }
+
+      console.log(`🔹 Parsed ${vcEvents.length} VC events`);
+
+      // Fetch channel names
+      const channelNames = new Map<string, string>();
+      for (const channelId of channelIds) {
+        const channel = guild.channels.cache.get(channelId);
+        if (channel) {
+          channelNames.set(channelId, channel.name);
+        }
+      }
+
+      // Update events with channel names
+      vcEvents.forEach(event => {
+        const channelName = channelNames.get(event.channelId);
+        if (channelName) {
+          event.channelName = channelName;
+        }
+      });
+
+      // Create voice sessions from events
+      vcEvents.sort((a, b) => a.timestamp.getTime() - b.timestamp.getTime());
+
+      const activeSessions = new Map<string, any>();
+
+      for (const event of vcEvents) {
+        const sessionKey = `${event.userId}-${event.channelId}`;
+
+        if (event.type === 'joined') {
+          const session = {
+            userId: event.userId,
+            guildId: guild.id,
+            channelId: event.channelId,
+            channelName: event.channelName,
+            joinedAt: event.timestamp,
+            createdAt: new Date(),
+            updatedAt: new Date()
+          };
+          activeSessions.set(sessionKey, session);
+
+        } else if (event.type === 'left') {
+          const session = activeSessions.get(sessionKey);
+          if (session) {
+            const leftAt = event.timestamp;
+            const duration = Math.floor((leftAt.getTime() - session.joinedAt.getTime()) / 1000);
+
+            const completedSession = {
+              ...session,
+              leftAt,
+              duration,
+              updatedAt: new Date()
+            };
+
+            try {
+              await this.createVoiceSession(completedSession);
+              sessionsCreated++;
+            } catch (error) {
+              errors.push(`Failed to create session for ${event.user}: ${error}`);
+            }
+
+            activeSessions.delete(sessionKey);
+          }
+        }
+      }
+
+      // Close remaining active sessions
+      for (const [sessionKey, session] of activeSessions) {
+        const now = new Date();
+        const duration = Math.floor((now.getTime() - session.joinedAt.getTime()) / 1000);
+
+        const completedSession = {
+          ...session,
+          leftAt: now,
+          duration,
+          updatedAt: now
+        };
+
+        try {
+          await this.createVoiceSession(completedSession);
+          sessionsCreated++;
+        } catch (error) {
+          errors.push(`Failed to close session for ${session.userId}: ${error}`);
+        }
+      }
+
+      console.log(`🔹 Created ${sessionsCreated} voice sessions from Sapphire bot data`);
+
+    } catch (error) {
+      console.error('🔸 Error syncing Sapphire VC logs:', error);
+      errors.push(`Sync failed: ${error}`);
+    } finally {
+      await client.destroy();
+    }
+
+    return {
+      success: errors.length === 0,
+      sessionsCreated,
+      errors
+    };
+  }
+
+  /**
+   * Parse a Sapphire embed to extract VC event data
+   */
+  private parseSapphireEmbed(embed: any, timestamp: Date, guildId: string): { type: 'joined' | 'left', user: string, userId: string, channelId: string, channelName: string, userCount: number, timestamp: Date, guildId: string } | null {
+    try {
+      if (!embed.title || (!embed.title.includes('User joined channel') && !embed.title.includes('User left channel'))) {
+        return null;
+      }
+
+      const type = embed.title.includes('joined') ? 'joined' : 'left';
+      const description = embed.description || '';
+
+      const userMatch = description.match(/\*\*User:\*\*\s*@?([^<]+)\s*\(<@(\d+)>\)/);
+      const channelMatch = description.match(/\*\*Channel:\*\*\s*<#(\d+)>/);
+      const usersMatch = description.match(/\*\*Users:\*\*\s*(\d+)/);
+
+      if (!userMatch || !channelMatch || !usersMatch) {
+        return null;
+      }
+
+      const user = userMatch[1].trim();
+      const userId = userMatch[2].trim();
+      const channelId = channelMatch[1].trim();
+      const userCount = parseInt(usersMatch[1]);
+
+      return {
+        type,
+        user,
+        userId,
+        channelId,
+        channelName: `Channel ${channelId}`, // Will be updated with real name
+        userCount,
+        timestamp,
+        guildId
+      };
+    } catch (error) {
+      console.error('🔸 Error parsing Sapphire embed:', error);
+      return null;
+    }
   }
 
   async close(): Promise<void> {
