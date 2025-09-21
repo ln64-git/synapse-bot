@@ -188,6 +188,13 @@ export class RealtimeTrackingService {
       const userId = newState.member.id;
       const guildId = newState.guild.id;
 
+      // Skip tracking for bots
+      if (newState.member.user.bot) return;
+
+      // Skip tracking for AFK channels
+      const channel = newState.channel as VoiceChannel;
+      if (channel && this.isAFKChannel(channel)) return;
+
       // User joined a voice channel
       if (!oldState.channelId && newState.channelId) {
         const channel = newState.channel as VoiceChannel;
@@ -353,5 +360,13 @@ export class RealtimeTrackingService {
       }
     }
     this.activeVoiceSessions.clear();
+  }
+
+  private isAFKChannel(channel: VoiceChannel): boolean {
+    const channelName = channel.name.toLowerCase();
+    return channelName.includes('afk') ||
+      channelName.includes('away') ||
+      channelName.includes('idle') ||
+      channel.id === '1357869633155371019'; // Known AFK channel ID
   }
 }

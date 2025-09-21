@@ -521,6 +521,22 @@ export class DatabaseService {
       const activeSessions = new Map<string, any>();
 
       for (const event of vcEvents) {
+        // Skip tracking for bots - check if user is a bot
+        try {
+          const user = await guild.members.fetch(event.userId);
+          if (user.user.bot) {
+            continue; // Skip this event if it's a bot
+          }
+        } catch (error) {
+          // If we can't fetch the user, skip this event to be safe
+          continue;
+        }
+
+        // Skip tracking for AFK channels
+        if (this.isAFKChannel(event.channelName, event.channelId)) {
+          continue;
+        }
+
         const sessionKey = `${event.userId}-${event.channelId}`;
 
         if (event.type === 'joined') {
@@ -540,6 +556,13 @@ export class DatabaseService {
           if (session) {
             const leftAt = event.timestamp;
             const duration = Math.floor((leftAt.getTime() - session.joinedAt.getTime()) / 1000);
+
+            // Skip sessions longer than 12 hours (likely corrupted data)
+            if (duration > 43200) {
+              console.log(`🔸 Skipping corrupted session: ${event.user} in ${event.channelName} (${Math.round(duration / 3600)} hours)`);
+              activeSessions.delete(sessionKey);
+              continue;
+            }
 
             const completedSession = {
               ...session,
@@ -564,6 +587,12 @@ export class DatabaseService {
       for (const [sessionKey, session] of activeSessions) {
         const now = new Date();
         const duration = Math.floor((now.getTime() - session.joinedAt.getTime()) / 1000);
+
+        // Skip sessions longer than 12 hours (likely corrupted data)
+        if (duration > 43200) {
+          console.log(`🔸 Skipping corrupted active session: ${session.userId} in ${session.channelName} (${Math.round(duration / 3600)} hours)`);
+          continue;
+        }
 
         const completedSession = {
           ...session,
@@ -635,6 +664,14 @@ export class DatabaseService {
       console.error('🔸 Error parsing Sapphire embed:', error);
       return null;
     }
+  }
+
+  private isAFKChannel(channelName: string, channelId: string): boolean {
+    const name = (channelName || '').toLowerCase();
+    return name.includes('afk') ||
+      name.includes('away') ||
+      name.includes('idle') ||
+      channelId === '1357869633155371019'; // Known AFK channel ID
   }
 
   async close(): Promise<void> {

@@ -9,10 +9,11 @@
     "dev": "npx tsx src/main.ts --watch",
     "build": "tsc",
     "clean": "rm -rf dist",
-    "test-affinity": "npx tsx src/optimized-affinity-test.ts",
-    "test-affinity-optimized": "npx tsx src/optimized-affinity-test.ts",
-    "test-affinity-full": "npx tsx src/test-affinity.ts",
-    "create-sample": "npx tsx src/create-sample-data.ts"
+    "db-regen": "npx tsx src/scripts/database-regen.ts",
+    "db-wipe": "npx tsx src/scripts/database-wipe.ts",
+    "vc-analyzeq": "npx tsx src/scripts/analyze-vc-logs.ts",
+    "vc-debug": "npx tsx src/scripts/debug-vc-data.ts",
+    "vc-analyze-user": "npx tsx src/scripts/analyze-user-vc.ts"
   },
   "keywords": [
     "discord",

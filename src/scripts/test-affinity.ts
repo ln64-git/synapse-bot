@@ -1,5 +1,5 @@
-import { DatabaseService } from './services/DatabaseService';
-import { config } from './config';
+import { DatabaseService } from '../services/DatabaseService';
+import { config } from '../config';
 
 async function optimizedAffinityTest() {
   console.log('🔹 Optimized Affinity Test...');
