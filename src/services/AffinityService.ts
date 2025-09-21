@@ -157,8 +157,8 @@ export class AffinityService {
   ): Promise<AffinityScore[]> {
     const collections = this.dbService.getCollections();
 
-    // Get all unique users this person has interacted with (recent interactions only)
-    const interactions = await collections.userInteractions
+    // Get all unique users this person has interacted with (text interactions)
+    const textInteractions = await collections.userInteractions
       .aggregate([
         {
           $match: {
@@ -169,14 +169,75 @@ export class AffinityService {
         },
         { $group: { _id: '$toUserId', count: { $sum: 1 } } },
         { $sort: { count: -1 } },
-        { $limit: 50 } // Only check top 50 most interacted users
+        { $limit: 25 } // Top 25 text interaction users
       ])
       .toArray();
 
+    // Get all unique users this person has spent VC time with
+    const vcInteractions = await collections.voiceSessions
+      .aggregate([
+        {
+          $match: {
+            userId,
+            guildId,
+            // Include both completed and active sessions
+          }
+        },
+        {
+          $lookup: {
+            from: 'voiceSessions',
+            let: { userId: '$userId', channelId: '$channelId', joinedAt: '$joinedAt', leftAt: '$leftAt' },
+            pipeline: [
+              {
+                $match: {
+                  $expr: {
+                    $and: [
+                      { $ne: ['$userId', '$$userId'] },
+                      { $eq: ['$channelId', '$$channelId'] },
+                      { $eq: ['$guildId', guildId] }
+                    ]
+                  }
+                }
+              }
+            ],
+            as: 'overlappingSessions'
+          }
+        },
+        {
+          $unwind: '$overlappingSessions'
+        },
+        {
+          $group: {
+            _id: '$overlappingSessions.userId',
+            count: { $sum: 1 }
+          }
+        },
+        {
+          $sort: { count: -1 }
+        },
+        {
+          $limit: 25 // Top 25 VC interaction users
+        }
+      ])
+      .toArray();
+
+    // Combine both lists and deduplicate
+    const allUserIds = new Set<string>();
+
+    // Add text interaction users
+    for (const interaction of textInteractions) {
+      allUserIds.add(interaction._id);
+    }
+
+    // Add VC interaction users
+    for (const interaction of vcInteractions) {
+      allUserIds.add(interaction._id);
+    }
+
     const relationships: AffinityScore[] = [];
 
-    for (const interaction of interactions) {
-      const affinity = await this.calculateAffinity(userId, interaction._id, guildId);
+    for (const targetUserId of allUserIds) {
+      const affinity = await this.calculateAffinity(userId, targetUserId, guildId);
       if (affinity.totalScore > 0) {
         relationships.push(affinity);
       }

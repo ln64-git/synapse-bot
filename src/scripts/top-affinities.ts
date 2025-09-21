@@ -67,7 +67,7 @@ async function showTopAffinities() {
 
       console.log(`\n${i + 1}. ${targetName} (${relationship.toUserId})`);
       console.log(`   Score: ${relationship.totalScore.toFixed(2)} (${strength})`);
-      console.log(`   Rank: #${relationship.rank} | Relative: ${relationship.relativeScore.toFixed(1)}%`);
+      console.log(`   Rank: #${relationship.rank}`);
 
       // Breakdown
       console.log(`   Breakdown:`);
