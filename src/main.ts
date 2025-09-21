@@ -1,5 +1,4 @@
 import { Bot } from "./Bot";
-import { config } from "./config";
 
 async function main() {
   try {

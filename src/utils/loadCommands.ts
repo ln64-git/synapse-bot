@@ -11,7 +11,7 @@ dotenv.config();
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
-export async function loadCommands(client: Client, commandsCollection: Collection<string, any>) {
+export async function loadCommands(commandsCollection: Collection<string, any>) {
   const commands = [];
   const commandsPath = path.join(__dirname, "../commands");
   const commandFiles = fs.readdirSync(commandsPath).filter(file => file.endsWith(".ts") || file.endsWith(".js"));
