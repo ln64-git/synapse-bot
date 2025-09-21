@@ -25,6 +25,13 @@ export interface AffinityScore {
   };
   relativeScore: number; // Score relative to user's other relationships
   rank: number; // Rank among all relationships for this user
+  vcDetails?: {
+    totalMinutes: number;
+    sessionCount: number;
+    averageSessionLength: number;
+    relativeScore: number; // How much time spent with this user vs others
+    topChannels: Array<{ channelName: string; minutes: number }>;
+  };
 }
 
 export interface AffinityAnalysis {
@@ -40,12 +47,12 @@ export interface AffinityAnalysis {
 export class AffinityService {
   private dbService: DatabaseService;
 
-  // Scoring weights for different interaction types
+  // Scoring weights for different interaction types (VC prioritized)
   private readonly SCORING_WEIGHTS = {
     reactions: 1.0,
     mentions: 2.0,
     replies: 3.0,
-    vcTime: 0.1, // per minute
+    vcTime: 2.0, // per minute - higher weight than text interactions
   };
 
   // Time decay factor (interactions older than this get reduced weight)
@@ -76,19 +83,19 @@ export class AffinityService {
       .limit(1000) // Limit to most recent 1000 interactions
       .toArray();
 
-    // Get voice sessions for VC time calculation (limit to recent ones)
+    // Get voice sessions for VC time calculation (all time)
     const voiceSessions = await collections.voiceSessions
       .find({
         userId: fromUserId,
         guildId,
-        joinedAt: { $gte: new Date(Date.now() - 90 * 24 * 60 * 60 * 1000) } // Last 90 days
+        // Include both completed and active sessions
       })
       .sort({ joinedAt: -1 })
-      .limit(500) // Limit to most recent 500 sessions
+      .limit(500) // Increased limit for all-time data
       .toArray();
 
     // Calculate scores for each interaction type
-    const scores = this.calculateInteractionScores(interactions, voiceSessions, toUserId);
+    const scores = await this.calculateInteractionScores(interactions, voiceSessions, toUserId, fromUserId, guildId);
 
     // Calculate time range
     const timeRange = this.calculateTimeRange(interactions);
@@ -106,6 +113,7 @@ export class AffinityService {
       timeRange,
       relativeScore,
       rank,
+      vcDetails: scores.vcDetails,
     };
   }
 
@@ -179,10 +187,12 @@ export class AffinityService {
       .slice(0, limit);
   }
 
-  private calculateInteractionScores(
+  private async calculateInteractionScores(
     interactions: UserInteraction[],
     voiceSessions: VoiceSession[],
-    targetUserId: string
+    targetUserId: string,
+    fromUserId: string,
+    guildId: string
   ) {
     let reactions = 0;
     let mentions = 0;
@@ -216,18 +226,17 @@ export class AffinityService {
       }
     }
 
-    // Calculate VC time with target user
-    for (const session of voiceSessions) {
-      if (session.leftAt) {
-        const duration = (session.leftAt.getTime() - session.joinedAt.getTime()) / (1000 * 60); // minutes
-        const timeDecay = this.calculateTimeDecay(session.joinedAt, now);
+    // Calculate VC time with target user using overlap detection
+    const vcTimeData = await this.calculateVCTimeWithUser(fromUserId, targetUserId, guildId, voiceSessions);
 
-        // Check if target user was in the same VC at the same time
-        // For now, we'll assume all VC time is shared (this could be improved with more detailed tracking)
-        vcTime += duration * this.SCORING_WEIGHTS.vcTime * timeDecay;
-        vcSessionCount++;
-      }
-    }
+    // Apply relative VC scoring - normalize against user's total VC time
+    const totalVCTime = await this.getTotalVCTimeForUser(fromUserId, guildId);
+    const vcRelativeScore = totalVCTime > 0 ? (vcTimeData.totalMinutes / totalVCTime) : 0;
+
+    // Scale VC score to give it more weight than text interactions
+    // Max possible VC score is 20 points (10 minutes = 1% of total VC time)
+    vcTime = Math.min(vcRelativeScore * 2000, 20) * this.SCORING_WEIGHTS.vcTime;
+    vcSessionCount = vcTimeData.sessionCount;
 
     const total = reactions + mentions + replies + vcTime;
 
@@ -245,6 +254,7 @@ export class AffinityService {
         replies: replyCount,
         vcSessions: vcSessionCount,
       },
+      vcDetails: vcTimeData, // Additional VC-specific data
     };
   }
 
@@ -290,16 +300,45 @@ export class AffinityService {
     guildId: string,
     currentScore: number
   ): Promise<{ relativeScore: number; rank: number }> {
-    const topRelationships = await this.getTopRelationships(userId, guildId, 20); // Limit to top 20 for performance
+    const collections = this.dbService.getCollections();
 
-    if (topRelationships.length === 0) {
+    // Get all users this person has interacted with (recent interactions only)
+    const interactionStats = await collections.userInteractions
+      .aggregate([
+        {
+          $match: {
+            fromUserId: userId,
+            guildId,
+            timestamp: { $gte: new Date(Date.now() - 90 * 24 * 60 * 60 * 1000) }
+          }
+        },
+        {
+          $group: {
+            _id: '$toUserId',
+            count: { $sum: 1 }
+          }
+        },
+        {
+          $sort: { count: -1 }
+        }
+      ])
+      .toArray();
+
+    if (interactionStats.length === 0) {
       return { relativeScore: 0, rank: 1 };
     }
 
-    const totalScore = topRelationships.reduce((sum, rel) => sum + rel.totalScore, 0);
-    const relativeScore = totalScore > 0 ? (currentScore / totalScore) * 100 : 0;
+    // Calculate relative score based on percentile
+    const scores = interactionStats.map((stat: any) => stat.count).sort((a: number, b: number) => b - a);
+    const maxScore = Math.max(...scores);
+    const avgScore = scores.reduce((sum: number, score: number) => sum + score, 0) / scores.length;
 
-    const rank = topRelationships.findIndex(rel => rel.totalScore <= currentScore) + 1;
+    // Normalize score: 0-100 scale based on percentile
+    const percentile = scores.findIndex((score: number) => score <= currentScore) / scores.length;
+    const relativeScore = Math.min(percentile * 100, 100);
+
+    // Calculate rank
+    const rank = scores.findIndex((score: number) => score <= currentScore) + 1;
 
     return { relativeScore, rank };
   }
@@ -309,9 +348,10 @@ export class AffinityService {
     score1to2: number,
     score2to1: number
   ): 'strong' | 'moderate' | 'weak' | 'none' {
-    if (mutualScore >= 50) return 'strong';
-    if (mutualScore >= 20) return 'moderate';
-    if (mutualScore >= 5) return 'weak';
+    // Balanced thresholds for the new scoring system
+    if (mutualScore >= 15) return 'strong';
+    if (mutualScore >= 8) return 'moderate';
+    if (mutualScore >= 3) return 'weak';
     return 'none';
   }
 
@@ -343,7 +383,31 @@ export class AffinityService {
     if (affinity.interactionCounts.mentions > totalInteractions * 0.3) {
       insights.push('Frequent mentions suggest close relationship');
     }
-    if (affinity.breakdown.vcTime > 10) {
+    // VC-specific insights
+    if (affinity.vcDetails) {
+      const vcDetails = affinity.vcDetails;
+
+      if (vcDetails.totalMinutes > 60) {
+        insights.push(`Extensive voice chat time together (${Math.round(vcDetails.totalMinutes)} minutes)`);
+      } else if (vcDetails.totalMinutes > 10) {
+        insights.push(`Moderate voice chat time together (${Math.round(vcDetails.totalMinutes)} minutes)`);
+      }
+
+      if (vcDetails.relativeScore > 10) {
+        insights.push(`High VC affinity - ${vcDetails.relativeScore.toFixed(1)}% of total VC time spent together`);
+      } else if (vcDetails.relativeScore > 2) {
+        insights.push(`Moderate VC affinity - ${vcDetails.relativeScore.toFixed(1)}% of total VC time spent together`);
+      }
+
+      if (vcDetails.topChannels.length > 0) {
+        const topChannel = vcDetails.topChannels[0];
+        insights.push(`Most time spent in "${topChannel.channelName}" (${Math.round(topChannel.minutes)} minutes)`);
+      }
+
+      if (vcDetails.averageSessionLength > 30) {
+        insights.push(`Long average VC sessions (${Math.round(vcDetails.averageSessionLength)} minutes)`);
+      }
+    } else if (affinity.breakdown.vcTime > 2) {
       insights.push('Significant voice chat time together');
     }
 
@@ -366,5 +430,197 @@ export class AffinityService {
     }
 
     return insights;
+  }
+
+  /**
+   * Calculate VC time spent together with another user using overlap detection
+   */
+  private async calculateVCTimeWithUser(
+    fromUserId: string,
+    targetUserId: string,
+    guildId: string,
+    fromUserSessions: VoiceSession[]
+  ): Promise<{
+    totalMinutes: number;
+    sessionCount: number;
+    averageSessionLength: number;
+    relativeScore: number; // How much time spent with this user vs others
+    topChannels: Array<{ channelName: string; minutes: number }>;
+  }> {
+    const collections = this.dbService.getCollections();
+
+    // Get target user's voice sessions (all time)
+    const targetUserSessions = await collections.voiceSessions
+      .find({
+        userId: targetUserId,
+        guildId,
+        // Include both completed and active sessions
+      })
+      .sort({ joinedAt: -1 })
+      .limit(500) // Increased limit for all-time data
+      .toArray();
+
+    // Find overlapping sessions
+    const overlappingSessions = this.findOverlappingSessions(fromUserSessions, targetUserSessions);
+
+    // Calculate total time together
+    let totalMinutes = 0;
+    const channelTimeMap = new Map<string, number>();
+
+    for (const overlap of overlappingSessions) {
+      const durationMinutes = overlap.durationMinutes;
+      totalMinutes += durationMinutes;
+
+      // Track time per channel
+      const channelName = overlap.channelName;
+      channelTimeMap.set(channelName, (channelTimeMap.get(channelName) || 0) + durationMinutes);
+    }
+
+    // Calculate relative score - time with this user vs time with all other users
+    const totalVCTime = await this.getTotalVCTimeForUser(fromUserId, guildId);
+    const relativeScore = totalVCTime > 0 ? (totalMinutes / totalVCTime) * 100 : 0;
+
+    // Get top channels
+    const topChannels = Array.from(channelTimeMap.entries())
+      .map(([channelName, minutes]) => ({ channelName, minutes }))
+      .sort((a, b) => b.minutes - a.minutes)
+      .slice(0, 5);
+
+    return {
+      totalMinutes,
+      sessionCount: overlappingSessions.length,
+      averageSessionLength: overlappingSessions.length > 0 ? totalMinutes / overlappingSessions.length : 0,
+      relativeScore,
+      topChannels,
+    };
+  }
+
+  /**
+   * Find overlapping voice sessions between two users
+   */
+  private findOverlappingSessions(
+    user1Sessions: VoiceSession[],
+    user2Sessions: VoiceSession[]
+  ): Array<{
+    channelName: string;
+    startTime: Date;
+    endTime: Date;
+    durationMinutes: number;
+  }> {
+    const overlaps: Array<{
+      channelName: string;
+      startTime: Date;
+      endTime: Date;
+      durationMinutes: number;
+    }> = [];
+
+    for (const session1 of user1Sessions) {
+      for (const session2 of user2Sessions) {
+        // Skip if same user (shouldn't happen but just in case)
+        if (session1.userId === session2.userId) continue;
+
+        // Check if sessions are in the same channel
+        if (session1.channelId !== session2.channelId) continue;
+
+        // Handle active sessions (no leftAt) by using current time
+        const session1End = session1.leftAt || new Date();
+        const session2End = session2.leftAt || new Date();
+
+        // Check for time overlap
+        const overlap = this.calculateTimeOverlap(
+          session1.joinedAt,
+          session1End,
+          session2.joinedAt,
+          session2End
+        );
+
+        if (overlap.durationMinutes > 0) {
+          overlaps.push({
+            channelName: session1.channelName,
+            startTime: overlap.startTime,
+            endTime: overlap.endTime,
+            durationMinutes: overlap.durationMinutes,
+          });
+        }
+      }
+    }
+
+    return overlaps;
+  }
+
+  /**
+   * Calculate time overlap between two time ranges
+   */
+  private calculateTimeOverlap(
+    start1: Date,
+    end1: Date,
+    start2: Date,
+    end2: Date
+  ): {
+    startTime: Date;
+    endTime: Date;
+    durationMinutes: number;
+  } {
+    const overlapStart = new Date(Math.max(start1.getTime(), start2.getTime()));
+    const overlapEnd = new Date(Math.min(end1.getTime(), end2.getTime()));
+
+    if (overlapStart >= overlapEnd) {
+      return {
+        startTime: overlapStart,
+        endTime: overlapEnd,
+        durationMinutes: 0,
+      };
+    }
+
+    const durationMinutes = (overlapEnd.getTime() - overlapStart.getTime()) / (1000 * 60);
+
+    return {
+      startTime: overlapStart,
+      endTime: overlapEnd,
+      durationMinutes,
+    };
+  }
+
+  /**
+   * Get total VC time for a user (for relative scoring)
+   */
+  private async getTotalVCTimeForUser(userId: string, guildId: string): Promise<number> {
+    const collections = this.dbService.getCollections();
+
+    // Use aggregation for better performance - all time data
+    const result = await collections.voiceSessions
+      .aggregate([
+        {
+          $match: {
+            userId,
+            guildId,
+            // Include both completed and active sessions
+          }
+        },
+        {
+          $project: {
+            durationMinutes: {
+              $divide: [
+                {
+                  $subtract: [
+                    { $ifNull: ["$leftAt", "$$NOW"] }, // Use current time if leftAt is null
+                    "$joinedAt"
+                  ]
+                },
+                60000 // Convert milliseconds to minutes
+              ]
+            }
+          }
+        },
+        {
+          $group: {
+            _id: null,
+            totalMinutes: { $sum: "$durationMinutes" }
+          }
+        }
+      ])
+      .toArray();
+
+    return result.length > 0 ? result[0].totalMinutes : 0;
   }
 }

@@ -74,6 +74,12 @@ export class GuildSyncService {
         syncedMessages = messagesResult.synced;
         errors.push(...messagesResult.errors);
 
+        // Sync interactions from historical messages
+        console.log('🔹 Syncing interactions from historical messages...');
+        const interactionsResult = await this.syncInteractionsFromMessages(guild);
+        errors.push(...interactionsResult.errors);
+        console.log(`🔹 Interactions synced: ${interactionsResult.synced}`);
+
         const totalTime = (Date.now() - syncStartTime) / 1000;
         console.log(`🔹 Full sync completed in ${totalTime.toFixed(1)}s`);
       } else {
@@ -316,6 +322,91 @@ export class GuildSyncService {
       console.log(`🔹 Message sync completed: ${synced} messages in ${elapsed.toFixed(1)}s (${rate}/s)`);
     } catch (error) {
       errors.push(`Failed to sync messages: ${error instanceof Error ? error.message : 'Unknown error'}`);
+    }
+
+    return { synced, errors };
+  }
+
+  private async syncInteractionsFromMessages(guild: Guild): Promise<{ synced: number; errors: string[] }> {
+    const errors: string[] = [];
+    let synced = 0;
+
+    try {
+      console.log('🔹 Syncing interactions from historical messages...');
+
+      const collections = this.dbService.getCollections();
+
+      // Get all messages that have mentions or replies
+      const messagesWithInteractions = await collections.messages
+        .find({
+          guildId: guild.id,
+          $or: [
+            { mentions: { $exists: true, $not: { $size: 0 } } },
+            { replyTo: { $exists: true } }
+          ]
+        })
+        .sort({ timestamp: -1 })
+        .toArray();
+
+      console.log(`🔹 Found ${messagesWithInteractions.length} messages with potential interactions`);
+
+      for (const message of messagesWithInteractions) {
+        try {
+          // Track mentions
+          if (message.mentions && message.mentions.length > 0) {
+            for (const mentionedUserId of message.mentions) {
+              if (mentionedUserId !== message.authorId) {
+                await this.dbService.recordInteraction({
+                  fromUserId: message.authorId,
+                  toUserId: mentionedUserId,
+                  guildId: message.guildId,
+                  interactionType: 'mention',
+                  messageId: message.discordId,
+                  channelId: message.channelId,
+                  timestamp: message.timestamp,
+                });
+                synced++;
+              }
+            }
+          }
+
+          // Track replies
+          if (message.replyTo) {
+            try {
+              // Find the replied-to message
+              const repliedMessage = await collections.messages.findOne({
+                discordId: message.replyTo,
+                guildId: message.guildId
+              });
+
+              if (repliedMessage && repliedMessage.authorId !== message.authorId) {
+                await this.dbService.recordInteraction({
+                  fromUserId: message.authorId,
+                  toUserId: repliedMessage.authorId,
+                  guildId: message.guildId,
+                  interactionType: 'reply',
+                  messageId: message.discordId,
+                  channelId: message.channelId,
+                  timestamp: message.timestamp,
+                  metadata: {
+                    repliedToMessageId: message.replyTo,
+                  },
+                });
+                synced++;
+              }
+            } catch (error) {
+              // Skip if we can't find the replied message
+              continue;
+            }
+          }
+        } catch (error) {
+          errors.push(`Failed to process interactions for message ${message.discordId}: ${error instanceof Error ? error.message : 'Unknown error'}`);
+        }
+      }
+
+      console.log(`🔹 Successfully synced ${synced} interactions from historical messages`);
+    } catch (error) {
+      errors.push(`Failed to sync interactions: ${error instanceof Error ? error.message : 'Unknown error'}`);
     }
 
     return { synced, errors };

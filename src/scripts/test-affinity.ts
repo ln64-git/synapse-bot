@@ -1,10 +1,12 @@
 import { DatabaseService } from '../services/DatabaseService';
+import { AffinityService } from '../services/AffinityService';
 import { config } from '../config';
 
 async function optimizedAffinityTest() {
-  console.log('🔹 Optimized Affinity Test...');
+  console.log('🔹 Advanced Affinity Test with VC Analysis...');
 
   const dbService = new DatabaseService();
+  const affinityService = new AffinityService(dbService);
 
   try {
     // Initialize database
@@ -39,137 +41,89 @@ async function optimizedAffinityTest() {
     const stats = await dbService.getGuildStats(guildId);
     console.log(`🔹 Guild stats: ${stats.totalUsers} users, ${stats.totalMessages} messages, ${stats.totalRoles} roles`);
 
-    // Get interactions with limits to avoid memory issues
-    console.log('🔹 Fetching interactions (limited to recent 1000)...');
+    // Use the new AffinityService for comprehensive analysis
+    console.log('🔹 Analyzing relationship with advanced VC scoring...');
+    const analysis = await affinityService.analyzeRelationship(user1Id, user2Id, guildId);
 
-    const collections = dbService.getCollections();
-
-    // Get recent interactions only
-    const interactions1to2 = await collections.userInteractions
-      .find({
-        fromUserId: user1Id,
-        toUserId: user2Id,
-        guildId,
-        timestamp: { $gte: new Date(Date.now() - 90 * 24 * 60 * 60 * 1000) } // Last 90 days
-      })
-      .sort({ timestamp: -1 })
-      .limit(1000)
-      .toArray();
-
-    const interactions2to1 = await collections.userInteractions
-      .find({
-        fromUserId: user2Id,
-        toUserId: user1Id,
-        guildId,
-        timestamp: { $gte: new Date(Date.now() - 90 * 24 * 60 * 60 * 1000) } // Last 90 days
-      })
-      .sort({ timestamp: -1 })
-      .limit(1000)
-      .toArray();
-
-    console.log(`🔹 Interactions from ${user1.displayName} to ${user2.displayName}: ${interactions1to2.length}`);
-    console.log(`🔹 Interactions from ${user2.displayName} to ${user1.displayName}: ${interactions2to1.length}`);
-
-    // Calculate scores with time decay
-    const scoringWeights = {
-      reaction: 1.0,
-      mention: 2.0,
-      reply: 3.0,
-    };
-
-    const now = new Date();
-    const TIME_DECAY_DAYS = 90;
-
-    function calculateTimeDecay(timestamp: Date): number {
-      const daysDiff = (now.getTime() - timestamp.getTime()) / (1000 * 60 * 60 * 24);
-
-      if (daysDiff <= TIME_DECAY_DAYS) {
-        return 1.0; // Full weight for recent interactions
-      }
-
-      // Exponential decay for older interactions
-      const decayFactor = Math.exp(-(daysDiff - TIME_DECAY_DAYS) / 30);
-      return Math.max(0.1, decayFactor); // Minimum 10% weight
-    }
-
-    let score1to2 = 0;
-    let score2to1 = 0;
-
-    const counts1to2: Record<string, number> = { reaction: 0, mention: 0, reply: 0 };
-    const counts2to1: Record<string, number> = { reaction: 0, mention: 0, reply: 0 };
-
-    // Process interactions with time decay
-    for (const interaction of interactions1to2) {
-      const timeDecay = calculateTimeDecay(interaction.timestamp);
-      counts1to2[interaction.interactionType] = (counts1to2[interaction.interactionType] || 0) + 1;
-      score1to2 += (scoringWeights[interaction.interactionType as keyof typeof scoringWeights] || 0) * timeDecay;
-    }
-
-    for (const interaction of interactions2to1) {
-      const timeDecay = calculateTimeDecay(interaction.timestamp);
-      counts2to1[interaction.interactionType] = (counts2to1[interaction.interactionType] || 0) + 1;
-      score2to1 += (scoringWeights[interaction.interactionType as keyof typeof scoringWeights] || 0) * timeDecay;
-    }
-
-    const mutualScore = score1to2 + score2to1;
-
-    console.log('\n🔹 AFFINITY ANALYSIS RESULTS:');
-    console.log('================================');
+    console.log('\n🔹 ADVANCED AFFINITY ANALYSIS RESULTS:');
+    console.log('=====================================');
     console.log(`User 1: ${user1.displayName} (${user1.discordId})`);
     console.log(`User 2: ${user2.displayName} (${user2.discordId})`);
-    console.log(`Mutual Score: ${mutualScore.toFixed(2)}`);
+    console.log(`Mutual Score: ${analysis.mutualScore.toFixed(2)}`);
+    console.log(`Relationship Type: ${analysis.relationshipType.toUpperCase()}`);
+
     console.log(`\nDirectional Scores:`);
-    console.log(`  ${user1.displayName} → ${user2.displayName}: ${score1to2.toFixed(2)}`);
-    console.log(`  ${user2.displayName} → ${user1.displayName}: ${score2to1.toFixed(2)}`);
+    console.log(`  ${user1.displayName} → ${user2.displayName}: ${analysis.affinity?.totalScore.toFixed(2) || 0}`);
+    console.log(`  ${user2.displayName} → ${user1.displayName}: ${analysis.reverseAffinity?.totalScore.toFixed(2) || 0}`);
 
-    console.log(`\nBreakdown for ${user1.displayName} → ${user2.displayName}:`);
-    console.log(`  Replies: ${counts1to2.reply} (${(counts1to2.reply * scoringWeights.reply).toFixed(2)} points)`);
-    console.log(`  Mentions: ${counts1to2.mention} (${(counts1to2.mention * scoringWeights.mention).toFixed(2)} points)`);
-    console.log(`  Reactions: ${counts1to2.reaction} (${(counts1to2.reaction * scoringWeights.reaction).toFixed(2)} points)`);
+    // Detailed breakdown
+    if (analysis.affinity) {
+      console.log(`\nBreakdown for ${user1.displayName} → ${user2.displayName}:`);
+      console.log(`  VC Time: ${analysis.affinity.breakdown.vcTime.toFixed(2)} points`);
+      console.log(`  Replies: ${analysis.affinity.breakdown.replies.toFixed(2)} points`);
+      console.log(`  Mentions: ${analysis.affinity.breakdown.mentions.toFixed(2)} points`);
+      console.log(`  Reactions: ${analysis.affinity.breakdown.reactions.toFixed(2)} points`);
 
-    console.log(`\nBreakdown for ${user2.displayName} → ${user1.displayName}:`);
-    console.log(`  Replies: ${counts2to1.reply} (${(counts2to1.reply * scoringWeights.reply).toFixed(2)} points)`);
-    console.log(`  Mentions: ${counts2to1.mention} (${(counts2to1.mention * scoringWeights.mention).toFixed(2)} points)`);
-    console.log(`  Reactions: ${counts2to1.reaction} (${(counts2to1.reaction * scoringWeights.reaction).toFixed(2)} points)`);
+      // VC-specific details
+      if (analysis.affinity.vcDetails) {
+        const vc = analysis.affinity.vcDetails;
+        console.log(`\n🔹 VOICE CHAT ANALYSIS:`);
+        console.log(`  Total time together: ${Math.round(vc.totalMinutes)} minutes`);
+        console.log(`  Number of sessions: ${vc.sessionCount}`);
+        console.log(`  Average session length: ${Math.round(vc.averageSessionLength)} minutes`);
+        console.log(`  Relative VC score: ${vc.relativeScore.toFixed(1)}% of total VC time`);
 
-    // Determine relationship type
-    let relationshipType = 'none';
-    if (mutualScore >= 50) relationshipType = 'strong';
-    else if (mutualScore >= 20) relationshipType = 'moderate';
-    else if (mutualScore >= 5) relationshipType = 'weak';
+        if (vc.topChannels.length > 0) {
+          console.log(`  Top channels:`);
+          vc.topChannels.forEach((channel, index) => {
+            console.log(`    ${index + 1}. ${channel.channelName}: ${Math.round(channel.minutes)} minutes`);
+          });
+        }
+      }
+    }
 
-    console.log(`\nRelationship Type: ${relationshipType.toUpperCase()}`);
+    if (analysis.reverseAffinity) {
+      console.log(`\nBreakdown for ${user2.displayName} → ${user1.displayName}:`);
+      console.log(`  VC Time: ${analysis.reverseAffinity.breakdown.vcTime.toFixed(2)} points`);
+      console.log(`  Replies: ${analysis.reverseAffinity.breakdown.replies.toFixed(2)} points`);
+      console.log(`  Mentions: ${analysis.reverseAffinity.breakdown.mentions.toFixed(2)} points`);
+      console.log(`  Reactions: ${analysis.reverseAffinity.breakdown.reactions.toFixed(2)} points`);
+    }
+
+    // Interaction counts
+    if (analysis.affinity) {
+      console.log(`\nInteraction Counts (${user1.displayName} → ${user2.displayName}):`);
+      console.log(`  VC Sessions: ${analysis.affinity.interactionCounts.vcSessions}`);
+      console.log(`  Replies: ${analysis.affinity.interactionCounts.replies}`);
+      console.log(`  Mentions: ${analysis.affinity.interactionCounts.mentions}`);
+      console.log(`  Reactions: ${analysis.affinity.interactionCounts.reactions}`);
+    }
 
     // Time range analysis
-    if (interactions1to2.length > 0 || interactions2to1.length > 0) {
-      const allInteractions = [...interactions1to2, ...interactions2to1];
-      const timestamps = allInteractions.map(i => i.timestamp);
-      const firstInteraction = new Date(Math.min(...timestamps.map(t => t.getTime())));
-      const lastInteraction = new Date(Math.max(...timestamps.map(t => t.getTime())));
-      const daysActive = (lastInteraction.getTime() - firstInteraction.getTime()) / (1000 * 60 * 60 * 24);
-
+    if (analysis.affinity?.timeRange) {
+      const timeRange = analysis.affinity.timeRange;
       console.log(`\nTime Range:`);
-      console.log(`  First Interaction: ${firstInteraction.toLocaleDateString()}`);
-      console.log(`  Last Interaction: ${lastInteraction.toLocaleDateString()}`);
-      console.log(`  Days Active: ${Math.round(daysActive)}`);
+      console.log(`  First Interaction: ${timeRange.firstInteraction?.toLocaleDateString() || 'Unknown'}`);
+      console.log(`  Last Interaction: ${timeRange.lastInteraction?.toLocaleDateString() || 'Unknown'}`);
+      console.log(`  Days Active: ${timeRange.daysActive}`);
     }
 
-    // Show recent interactions
-    if (interactions1to2.length > 0) {
-      console.log(`\n🔹 Recent interactions from ${user1.displayName} to ${user2.displayName}:`);
-      interactions1to2.slice(0, 5).forEach((interaction: any, index: number) => {
-        console.log(`  ${index + 1}. ${interaction.interactionType} at ${interaction.timestamp.toLocaleString()}`);
+    // Relative metrics
+    if (analysis.affinity) {
+      console.log(`\nRelative Metrics:`);
+      console.log(`  Relative Score: ${analysis.affinity.relativeScore.toFixed(1)}%`);
+      console.log(`  Rank: #${analysis.affinity.rank}`);
+    }
+
+    // Insights
+    if (analysis.insights.length > 0) {
+      console.log(`\n🔹 INSIGHTS:`);
+      analysis.insights.forEach((insight, index) => {
+        console.log(`  ${index + 1}. ${insight}`);
       });
     }
 
-    if (interactions2to1.length > 0) {
-      console.log(`\n🔹 Recent interactions from ${user2.displayName} to ${user1.displayName}:`);
-      interactions2to1.slice(0, 5).forEach((interaction: any, index: number) => {
-        console.log(`  ${index + 1}. ${interaction.interactionType} at ${interaction.timestamp.toLocaleString()}`);
-      });
-    }
-
-    console.log('\n🔹 Optimized affinity test completed successfully!');
+    console.log('\n🔹 Advanced affinity test completed successfully!');
 
   } catch (error) {
     console.error('🔸 Error in optimized affinity test:', error);

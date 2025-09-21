@@ -9,9 +9,11 @@
     "dev": "npx tsx src/main.ts --watch",
     "build": "tsc",
     "clean": "rm -rf dist",
+    "test-affinity": "npx tsx src/scripts/test-affinity.ts",
+    "top-affinities": "npx tsx src/scripts/top-affinities.ts",
     "db-regen": "npx tsx src/scripts/database-regen.ts",
     "db-wipe": "npx tsx src/scripts/database-wipe.ts",
-    "vc-analyzeq": "npx tsx src/scripts/analyze-vc-logs.ts",
+    "vc-analyze": "npx tsx src/scripts/analyze-vc-logs.ts",
     "vc-debug": "npx tsx src/scripts/debug-vc-data.ts",
     "vc-analyze-user": "npx tsx src/scripts/analyze-user-vc.ts"
   },

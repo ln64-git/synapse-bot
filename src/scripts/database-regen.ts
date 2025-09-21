@@ -1,15 +1,19 @@
 import { DatabaseService } from '../services/DatabaseService';
+import { GuildSyncService } from '../services/GuildSyncService';
 import { closeDatabase } from '../utils/database';
 import { config } from '../config';
+import { Client, GatewayIntentBits } from 'discord.js';
 
 interface RegenOptions {
   wipe?: boolean;
   syncSapphire?: boolean;
+  syncGuild?: boolean;
   showStats?: boolean;
 }
 
 async function regenDatabase(options: RegenOptions = {}) {
   const dbService = new DatabaseService();
+  let client: Client | null = null;
 
   try {
     console.log('🔹 Initializing database service...');
@@ -19,6 +23,54 @@ async function regenDatabase(options: RegenOptions = {}) {
       console.log('🔹 Wiping database...');
       await dbService.wipeDatabase();
       console.log('🔹 Database wiped successfully');
+    }
+
+    if (options.syncGuild) {
+      console.log('🔹 Syncing guild data...');
+
+      // Initialize Discord client for guild sync
+      client = new Client({
+        intents: [
+          GatewayIntentBits.Guilds,
+          GatewayIntentBits.GuildMessages,
+          GatewayIntentBits.MessageContent,
+          GatewayIntentBits.GuildMembers,
+          GatewayIntentBits.GuildVoiceStates,
+          GatewayIntentBits.GuildMessageReactions,
+        ],
+      });
+
+      await client.login(config.botToken);
+      console.log('🔹 Connected to Discord');
+
+      const guildId = config.guildId;
+      if (!guildId) {
+        console.error('🔸 No guild ID configured');
+        return;
+      }
+
+      const guild = await client.guilds.fetch(guildId);
+      if (!guild) {
+        console.error(`🔸 Guild ${guildId} not found`);
+        return;
+      }
+
+      const guildSyncService = new GuildSyncService(dbService);
+      const result = await guildSyncService.syncGuild(guild, true, 5000); // Force full sync, limit to 5000 messages
+
+      if (result.success) {
+        console.log(`🔹 Successfully synced guild data:`);
+        console.log(`  - Users: ${result.syncedUsers}`);
+        console.log(`  - Roles: ${result.syncedRoles}`);
+        console.log(`  - Messages: ${result.syncedMessages}`);
+        if (result.errors.length > 0) {
+          console.log(`  - Errors: ${result.errors.length}`);
+          result.errors.forEach(error => console.log(`    - ${error}`));
+        }
+      } else {
+        console.error('🔸 Failed to sync guild data');
+        result.errors.forEach(error => console.error(`  - ${error}`));
+      }
     }
 
     if (options.syncSapphire) {
@@ -56,6 +108,9 @@ async function regenDatabase(options: RegenOptions = {}) {
     console.error('🔸 Error during database regeneration:', error);
     process.exit(1);
   } finally {
+    if (client) {
+      await client.destroy();
+    }
     await dbService.close();
     await closeDatabase();
   }
@@ -71,10 +126,19 @@ function parseArgs(): RegenOptions {
       case '--wipe':
         options.wipe = true;
         break;
+      case '--sync-guild':
+        options.syncGuild = true;
+        break;
       case '--sync-sapphire':
         options.syncSapphire = true;
         break;
       case '--stats':
+        options.showStats = true;
+        break;
+      case '--all':
+        options.wipe = true;
+        options.syncGuild = true;
+        options.syncSapphire = true;
         options.showStats = true;
         break;
       case '--help':
@@ -85,14 +149,17 @@ Usage: npx tsx src/scripts/database-regen.ts [options]
 
 Options:
   --wipe              Wipe all data from the database
+  --sync-guild        Sync all guild data (users, roles, messages, interactions)
   --sync-sapphire     Sync voice session data from Sapphire bot logs
   --stats             Show database statistics
+  --all               Do everything (wipe + sync guild + sync sapphire + stats)
   --help              Show this help message
 
 Examples:
+  npx tsx src/scripts/database-regen.ts --all
+  npx tsx src/scripts/database-regen.ts --wipe --sync-guild --stats
+  npx tsx src/scripts/database-regen.ts --sync-guild --sync-sapphire --stats
   npx tsx src/scripts/database-regen.ts --wipe --stats
-  npx tsx src/scripts/database-regen.ts --sync-sapphire --stats
-  npx tsx src/scripts/database-regen.ts --wipe --sync-sapphire --stats
         `);
         process.exit(0);
         break;

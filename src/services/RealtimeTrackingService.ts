@@ -306,9 +306,14 @@ export class RealtimeTrackingService {
   // Helper method to track message interactions
   private async trackMessageInteractions(message: Message): Promise<void> {
     try {
+      console.log(`🔍 Tracking interactions for message: ${message.content.substring(0, 50)}...`);
+      console.log(`🔍 Mentions: ${message.mentions.users.size}`);
+      console.log(`🔍 Reply to: ${message.reference?.messageId || 'None'}`);
+
       // Track mentions
       for (const mentionedUser of message.mentions.users.values()) {
         if (mentionedUser.id !== message.author.id) {
+          console.log(`🔹 Recording mention: ${message.author.id} → ${mentionedUser.id}`);
           await this.dbService.recordInteraction({
             fromUserId: message.author.id,
             toUserId: mentionedUser.id,
@@ -323,8 +328,10 @@ export class RealtimeTrackingService {
 
       // Track replies
       if (message.reference?.messageId) {
+        console.log(`🔹 Fetching replied message: ${message.reference.messageId}`);
         const repliedMessage = await message.channel.messages.fetch(message.reference.messageId);
         if (repliedMessage && repliedMessage.author.id !== message.author.id) {
+          console.log(`🔹 Recording reply: ${message.author.id} → ${repliedMessage.author.id}`);
           await this.dbService.recordInteraction({
             fromUserId: message.author.id,
             toUserId: repliedMessage.author.id,

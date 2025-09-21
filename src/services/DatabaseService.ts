@@ -452,7 +452,7 @@ export class DatabaseService {
       const messages = new Map<string, any>();
       let lastMessageId: string | undefined;
       let totalFetched = 0;
-      const maxMessages = 1000;
+      const maxMessages = 5000; // Increased limit for more historical data
 
       while (totalFetched < maxMessages) {
         const batchSize = Math.min(100, maxMessages - totalFetched);
